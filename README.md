@@ -2,7 +2,7 @@
 
 PerformX is a powerful, interactive dashboard for analyzing employee performance data. Built with Streamlit and enhanced with AI-powered insights, it provides a comprehensive view of individual and team performance metrics.
 
-![PerformX Dashboard](https://img.icons8.com/fluency/96/000000/data-backup.png)
+
 
 ## Features
 
