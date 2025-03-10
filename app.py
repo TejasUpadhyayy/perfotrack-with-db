@@ -3,8 +3,12 @@ import pandas as pd
 import sqlite3
 import plotly.express as px
 import plotly.graph_objects as go
-from io import BytesIO
 import numpy as np
+import os
+import requests
+import json
+import re
+from io import BytesIO
 
 # Set page configuration
 st.set_page_config(
@@ -40,8 +44,19 @@ st.markdown("""
         padding: 20px;
         margin-bottom: 20px;
     }
+    .ai-insights {
+        background-color: #f8f9fa;
+        border-left: 4px solid #1E88E5;
+        padding: 15px;
+        margin: 10px 0;
+        color: #333333 !important; /* Force dark text color regardless of theme */
+    }
 </style>
 """, unsafe_allow_html=True)
+
+# Groq API details
+GROQ_API_KEY = st.secrets.get("GROQ_API_KEY", "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")
+MODEL = "llama-3.3-70b-versatile"
 
 # Title
 st.markdown("<h1 class='main-header'>PerformX - Employee Performance Tracker</h1>", unsafe_allow_html=True)
@@ -95,9 +110,6 @@ def analyze_performance(employee_data, metrics_data):
                 performance_data['tasks_completed'] / performance_data['working_hours']
             ).fillna(0)
             
-        # Optional: Use AI for more insights (placeholder)
-        # This would integrate with Gemini or another model API
-        
         return performance_data
     else:
         # Return basic employee data if metrics cannot be merged
@@ -124,6 +136,103 @@ def get_department_performance(performance_data):
     
     return dept_performance
 
+# Function to query Groq API for AI insights
+def query_groq_api(prompt):
+    try:
+        url = "https://api.groq.com/openai/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {GROQ_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": MODEL,
+            "messages": [{"role": "user", "content": prompt}]
+        }
+        response = requests.post(url, headers=headers, data=json.dumps(payload))
+        return response.json().get("choices", [{}])[0].get("message", {}).get("content", "No response from AI.")
+    except Exception as e:
+        return f"Error querying AI: {str(e)}"
+
+# Function to generate AI performance insights
+def generate_ai_insights(employee_data, performance_data, employee_name=None, department=None):
+    if employee_name:
+        # Filter data for specific employee
+        emp_data = performance_data[performance_data['name'] == employee_name]
+        
+        if emp_data.empty:
+            return "No data available for this employee."
+        
+        # Create prompt for individual employee
+        prompt = f"""
+        Analyze the following employee's performance:
+        
+        Name: {employee_name}
+        Department: {emp_data.iloc[0].get('department', 'N/A')}
+        Position: {emp_data.iloc[0].get('position', 'N/A')}
+        
+        Performance metrics:
+        - Tasks assigned: {emp_data['tasks_assigned'].sum()}
+        - Tasks completed: {emp_data['tasks_completed'].sum()}
+        - Completion rate: {(emp_data['tasks_completed'].sum() / emp_data['tasks_assigned'].sum() * 100):.1f}%
+        - Average working hours: {emp_data['working_hours'].mean():.1f}
+        - Average quality score: {emp_data['quality_score'].mean():.2f}/5.0
+        - Average review score: {emp_data['review_score'].mean():.2f}/5.0
+        
+        Provide a concise professional performance analysis with 3-4 specific insights, strengths, and areas for improvement.
+        Format your response with bullet points where appropriate. Keep it under 300 words.
+        """
+        
+        return query_groq_api(prompt)
+    
+    elif department:
+        # For department analysis
+        dept_data = performance_data[performance_data['department'] == department]
+        
+        if dept_data.empty:
+            return "No data available for this department."
+        
+        prompt = f"""
+        Analyze the following department performance:
+        
+        Department: {department}
+        Number of employees: {len(dept_data['name'].unique())}
+        
+        Department metrics:
+        - Tasks assigned: {dept_data['tasks_assigned'].sum()}
+        - Tasks completed: {dept_data['tasks_completed'].sum()}
+        - Completion rate: {(dept_data['tasks_completed'].sum() / dept_data['tasks_assigned'].sum() * 100):.1f}%
+        - Average working hours: {dept_data['working_hours'].mean():.1f}
+        - Average quality score: {dept_data['quality_score'].mean():.2f}/5.0
+        - Average review score: {dept_data['review_score'].mean():.2f}/5.0
+        
+        Provide a concise professional department performance analysis with 3-4 key insights, strengths, and areas for improvement.
+        Format your response with bullet points where appropriate. Keep it under 300 words.
+        """
+        
+        return query_groq_api(prompt)
+    
+    else:
+        # For overall performance
+        prompt = f"""
+        Analyze the following overall company performance:
+        
+        Number of employees: {len(performance_data['name'].unique())}
+        Number of departments: {len(performance_data['department'].unique())}
+        
+        Overall metrics:
+        - Tasks assigned: {performance_data['tasks_assigned'].sum()}
+        - Tasks completed: {performance_data['tasks_completed'].sum()}
+        - Completion rate: {(performance_data['tasks_completed'].sum() / performance_data['tasks_assigned'].sum() * 100):.1f}%
+        - Average working hours: {performance_data['working_hours'].mean():.1f}
+        - Average quality score: {performance_data['quality_score'].mean():.2f}/5.0
+        - Average review score: {performance_data['review_score'].mean():.2f}/5.0
+        
+        Provide a concise professional company performance analysis with 3-4 key insights, strengths, and areas for improvement.
+        Format your response with bullet points where appropriate. Keep it under 300 words.
+        """
+        
+        return query_groq_api(prompt)
+    
 # Sidebar for file upload and options
 with st.sidebar:
     st.image("https://img.icons8.com/fluency/96/000000/data-backup.png", width=80)
@@ -133,11 +242,12 @@ with st.sidebar:
     if uploaded_file is not None:
         # Save the uploaded file to a temporary file
         bytes_data = uploaded_file.getvalue()
-        with open("temp_db.db", "wb") as f:
+        db_path = os.path.join(os.getcwd(), uploaded_file.name)
+        with open(db_path, "wb") as f:
             f.write(bytes_data)
         
         # Load data from the database
-        data_dict, error = load_data("temp_db.db")
+        data_dict, error = load_data(db_path)
         
         if error:
             st.error(f"Error loading database: {error}")
@@ -148,23 +258,84 @@ with st.sidebar:
             table_names = list(data_dict.keys())
             
             st.markdown("## Select Data Tables")
-            employee_table = st.selectbox(
-                "Select employee table:",
-                table_names,
-                index=0 if table_names else None
-            )
             
-            performance_table = st.selectbox(
-                "Select performance metrics table:",
-                table_names,
-                index=min(1, len(table_names)-1) if len(table_names) > 1 else 0
-            )
+            # Check if standard tables exist
+            if 'employees' in table_names and 'performance_metrics' in table_names:
+                employee_table = 'employees'
+                performance_table = 'performance_metrics'
+                st.info("Standard tables detected and selected automatically.")
+            # Check for CONTACTS/TASKS format
+            elif 'CONTACTS' in table_names and 'TASKS' in table_names:
+                st.info("CONTACTS/TASKS format detected.")
+                # Rename columns to match our expected format
+                contacts_df = data_dict['CONTACTS'].copy()
+                tasks_df = data_dict['TASKS'].copy()
+                
+                # Map CONTACTS to employees format
+                if 'ID' in contacts_df and 'NAME' in contacts_df:
+                    contacts_df = contacts_df.rename(columns={
+                        'ID': 'employee_id',
+                        'NAME': 'name'
+                    })
+                    if 'DEPARTMENT' in contacts_df:
+                        contacts_df = contacts_df.rename(columns={'DEPARTMENT': 'department'})
+                    else:
+                        contacts_df['department'] = 'Default'
+                    
+                    if 'POSITION' not in contacts_df:
+                        contacts_df['position'] = 'Unknown'
+                    
+                    data_dict['employees'] = contacts_df
+                
+                # Map TASKS to performance_metrics format
+                if 'ID' in tasks_df and 'ASSIGNED_TO' in tasks_df:
+                    tasks_df = tasks_df.rename(columns={
+                        'ASSIGNED_TO': 'employee_id'
+                    })
+                    
+                    # Create metrics based on tasks
+                    if 'STATUS' in tasks_df:
+                        employee_metrics = []
+                        for emp_id in contacts_df['employee_id'].unique():
+                            emp_tasks = tasks_df[tasks_df['employee_id'] == emp_id]
+                            
+                            # Metrics
+                            tasks_assigned = len(emp_tasks)
+                            tasks_completed = len(emp_tasks[emp_tasks['STATUS'] == 'Completed'])
+                            
+                            employee_metrics.append({
+                                'employee_id': emp_id,
+                                'tasks_assigned': tasks_assigned,
+                                'tasks_completed': tasks_completed,
+                                'working_hours': np.random.randint(160, 180),
+                                'quality_score': np.random.uniform(3.0, 5.0),
+                                'review_score': np.random.uniform(3.0, 5.0),
+                                'month': 'Current',
+                                'year': 2025
+                            })
+                        
+                        data_dict['performance_metrics'] = pd.DataFrame(employee_metrics)
+                
+                employee_table = 'employees'
+                performance_table = 'performance_metrics'
+            else:
+                employee_table = st.selectbox(
+                    "Select employee table:",
+                    table_names,
+                    index=0 if table_names else None
+                )
+                
+                performance_table = st.selectbox(
+                    "Select performance metrics table:",
+                    table_names,
+                    index=min(1, len(table_names)-1) if len(table_names) > 1 else 0
+                )
             
             # View options
             st.markdown("## View Options")
             view_mode = st.radio(
                 "Select view mode:",
-                ["Overview", "Individual Performance", "Department Analysis"]
+                ["Overview", "Individual Performance", "Department Analysis", "AI Insights"]
             )
             
             # Filtering options
@@ -173,6 +344,9 @@ with st.sidebar:
                 selected_department = st.selectbox("Filter by department:", departments)
             else:
                 selected_department = 'All'
+            
+            # AI Insights toggle
+            enable_ai = st.checkbox("Enable AI Insights", value=True)
     else:
         st.info("Please upload a SQLite database file (.db)")
         
@@ -227,11 +401,12 @@ with st.sidebar:
             performance_table = 'performance_metrics'
             view_mode = "Overview"
             selected_department = 'All'
+            enable_ai = True
             
             st.success("Demo data loaded successfully!")
             st.rerun()
 
-# Main content area
+        # Main content area
 if 'data_dict' in locals() and data_dict:
     # Process and analyze the data
     if employee_table in data_dict and performance_table in data_dict:
@@ -300,6 +475,13 @@ if 'data_dict' in locals() and data_dict:
                 else:
                     st.metric("Avg. Review Score", "N/A")
                 st.markdown("</div>", unsafe_allow_html=True)
+                
+            # AI Insights
+            if enable_ai:
+                st.markdown("<h2 class='sub-header'>AI Performance Insights</h2>", unsafe_allow_html=True)
+                with st.spinner("Generating AI insights..."):
+                    ai_insights = generate_ai_insights(employee_data, filtered_data)
+                    st.markdown(f"<div class='ai-insights'>{ai_insights}</div>", unsafe_allow_html=True)
             
             # Department comparison
             if dept_performance is not None:
@@ -406,6 +588,13 @@ if 'data_dict' in locals() and data_dict:
                         
                         st.markdown("</div>", unsafe_allow_html=True)
                     
+                    # AI Insights for this employee
+                    if enable_ai:
+                        st.markdown("<h3 class='sub-header'>AI Performance Assessment</h3>", unsafe_allow_html=True)
+                        with st.spinner("Generating AI insights..."):
+                            ai_insights = generate_ai_insights(employee_data, filtered_data, employee_name=selected_employee)
+                            st.markdown(f"<div class='ai-insights'>{ai_insights}</div>", unsafe_allow_html=True)
+                    
                     # Performance visualization
                     st.markdown("<h3 class='sub-header'>Performance Visualization</h3>", unsafe_allow_html=True)
                     
@@ -463,39 +652,48 @@ if 'data_dict' in locals() and data_dict:
                             st.plotly_chart(fig, use_container_width=True)
                             st.markdown("</div>", unsafe_allow_html=True)
                     
-                    # AI-generated insights (placeholder)
-                    st.markdown("<h3 class='sub-header'>Performance Insights</h3>", unsafe_allow_html=True)
-                    
-                    st.markdown("<div class='card'>", unsafe_allow_html=True)
-                    st.markdown("#### Automated Performance Analysis")
-                    
-                    # Simple rule-based insights (placeholder for AI integration)
-                    insights = []
-                    
-                    if 'completion_rate' in employee_row:
-                        if employee_row['completion_rate'] > 0.9:
-                            insights.append("👍 **High task completion rate** - Excellent at completing assigned tasks.")
-                        elif employee_row['completion_rate'] < 0.6:
-                            insights.append("⚠️ **Low task completion rate** - May need support in managing workload.")
-                    
-                    if 'productivity' in employee_row and 'productivity' in filtered_data:
-                        dept_avg = filtered_data['productivity'].mean()
-                        if employee_row['productivity'] > dept_avg * 1.2:
-                            insights.append("🌟 **High productivity** - Significantly above department average.")
-                        elif employee_row['productivity'] < dept_avg * 0.8:
-                            insights.append("📉 **Below average productivity** - Consider additional training or support.")
-                    
-                    if 'quality_score' in employee_row and employee_row['quality_score'] > 4.5:
-                        insights.append("✅ **Excellent quality score** - Consistently delivers high-quality work.")
-                    
-                    if not insights:
-                        insights.append("No specific insights generated. Performance is within normal parameters.")
-                    
-                    for insight in insights:
-                        st.markdown(insight)
-                    
-                    st.markdown("</div>", unsafe_allow_html=True)
-            
+                    # Additional performance analysis if month/year data available
+                    if 'month' in filtered_data.columns and 'year' in filtered_data.columns:
+                        employee_history = filtered_data[filtered_data['name'] == selected_employee]
+                        
+                        if len(employee_history) > 1:
+                            st.markdown("<h3 class='sub-header'>Performance Trends</h3>", unsafe_allow_html=True)
+                            
+                            # Create period labels for consistent ordering
+                            employee_history['period'] = employee_history.apply(
+                                lambda x: f"{x['month']} {x['year']}", axis=1
+                            )
+                            
+                            # Sort by year and month
+                            month_order = ['January', 'February', 'March', 'April', 'May', 'June', 
+                                          'July', 'August', 'September', 'October', 'November', 'December']
+                            employee_history['month_idx'] = employee_history['month'].apply(lambda x: month_order.index(x) if x in month_order else -1)
+                            employee_history = employee_history.sort_values(by=['year', 'month_idx'])
+                            
+                            # Create trend chart
+                            fig = px.line(
+                                employee_history,
+                                x='period',
+                                y=['tasks_assigned', 'tasks_completed'],
+                                title='Task Assignment and Completion Trend',
+                                labels={'value': 'Count', 'period': 'Period', 'variable': 'Metric'},
+                                markers=True,
+                            )
+                            st.plotly_chart(fig, use_container_width=True)
+                            
+                            # Quality and review score trends
+                            if 'quality_score' in employee_history.columns and 'review_score' in employee_history.columns:
+                                fig = px.line(
+                                    employee_history,
+                                    x='period',
+                                    y=['quality_score', 'review_score'],
+                                    title='Quality and Review Score Trend',
+                                    labels={'value': 'Score', 'period': 'Period', 'variable': 'Metric'},
+                                    markers=True,
+                                )
+                                fig.update_layout(yaxis_range=[0, 5])
+                                st.plotly_chart(fig, use_container_width=True)
+
         elif view_mode == "Department Analysis":
             st.markdown("<h2 class='sub-header'>Department Analysis</h2>", unsafe_allow_html=True)
             
@@ -576,6 +774,13 @@ if 'data_dict' in locals() and data_dict:
                         st.plotly_chart(fig, use_container_width=True)
                     st.markdown("</div>", unsafe_allow_html=True)
                 
+                # AI Insights for selected department
+                if enable_ai and selected_department != 'All':
+                    st.markdown("<h3 class='sub-header'>AI Department Analysis</h3>", unsafe_allow_html=True)
+                    with st.spinner("Generating AI insights..."):
+                        ai_insights = generate_ai_insights(employee_data, filtered_data, department=selected_department)
+                        st.markdown(f"<div class='ai-insights'>{ai_insights}</div>", unsafe_allow_html=True)
+                
                 # Department staffing
                 if 'department' in employee_data.columns:
                     st.markdown("<div class='card'>", unsafe_allow_html=True)
@@ -595,5 +800,138 @@ if 'data_dict' in locals() and data_dict:
                 # Department data table
                 st.markdown("<h3 class='sub-header'>Department Performance Data</h3>", unsafe_allow_html=True)
                 st.dataframe(dept_performance, use_container_width=True)
+        
+        elif view_mode == "AI Insights":
+            st.markdown("<h2 class='sub-header'>AI Performance Insights</h2>", unsafe_allow_html=True)
+            
+            # Create tabs for different AI insights
+            tabs = st.tabs(["Overall Insights", "Department Insights", "Custom Query"])
+            
+            with tabs[0]:
+                st.subheader("Company Performance Summary")
+                with st.spinner("Generating AI insights..."):
+                    ai_insights = generate_ai_insights(employee_data, filtered_data)
+                    st.markdown(f"<div class='ai-insights'>{ai_insights}</div>", unsafe_allow_html=True)
+                    
+                # Show key charts
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    # Completion rate by department
+                    if dept_performance is not None and 'dept_completion_rate' in dept_performance:
+                        fig = px.bar(
+                            dept_performance,
+                            x='department',
+                            y='dept_completion_rate',
+                            title='Task Completion Rate by Department',
+                            labels={'dept_completion_rate': 'Completion Rate', 'department': 'Department'},
+                            color='department',
+                            text_auto='.1%'
+                        )
+                        fig.update_traces(texttemplate='%{text}', textposition='outside')
+                        fig.update_layout(height=400)
+                        st.plotly_chart(fig, use_container_width=True)
+                
+                with col2:
+                    # Employee distribution
+                    if 'department' in employee_data.columns:
+                        dept_counts = employee_data['department'].value_counts().reset_index()
+                        dept_counts.columns = ['department', 'count']
+                        
+                        fig = px.pie(
+                            dept_counts,
+                            names='department',
+                            values='count',
+                            title='Employee Distribution by Department',
+                            color='department',
+                            hole=0.4
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
+            
+            with tabs[1]:
+                st.subheader("Department-Specific Insights")
+                if 'department' in employee_data.columns:
+                    dept_list = sorted(employee_data['department'].unique().tolist())
+                    selected_dept = st.selectbox("Select Department for Analysis:", dept_list)
+                    
+                    if selected_dept:
+                        with st.spinner(f"Analyzing {selected_dept} department..."):
+                            dept_filtered_data = performance_data[performance_data['department'] == selected_dept]
+                            dept_ai_insights = generate_ai_insights(employee_data, dept_filtered_data, department=selected_dept)
+                            st.markdown(f"<div class='ai-insights'>{dept_ai_insights}</div>", unsafe_allow_html=True)
+                        
+                        # Department employee table
+                        st.subheader(f"Employees in {selected_dept}")
+                        dept_employees = dept_filtered_data[['name', 'position', 'tasks_assigned', 'tasks_completed', 'quality_score', 'review_score']]
+                        st.dataframe(dept_employees, use_container_width=True)
+                        
+                        # Performance charts
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            # Top performers in department
+                            if 'productivity' in dept_filtered_data.columns and 'name' in dept_filtered_data.columns:
+                                top_dept_employees = dept_filtered_data.sort_values('productivity', ascending=False).head(5)
+                                
+                                fig = px.bar(
+                                    top_dept_employees,
+                                    x='name',
+                                    y='productivity',
+                                    title=f'Top Performers in {selected_dept}',
+                                    color='productivity',
+                                    color_continuous_scale='Blues',
+                                )
+                                st.plotly_chart(fig, use_container_width=True)
+                        
+                        with col2:
+                            # Quality score distribution
+                            if 'quality_score' in dept_filtered_data.columns:
+                                fig = px.histogram(
+                                    dept_filtered_data,
+                                    x='quality_score',
+                                    title=f'Quality Score Distribution in {selected_dept}',
+                                    labels={'quality_score': 'Quality Score'},
+                                    color_discrete_sequence=['royalblue'],
+                                    nbins=10
+                                )
+                                st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.info("Department information not available in the data.")
+            
+            with tabs[2]:
+                st.subheader("Custom Performance Query")
+                query = st.text_area("Enter your performance analysis question:", 
+                                    placeholder="E.g., What are the strengths and weaknesses of the Engineering department?")
+                
+                if query:
+                    # Create a context-rich prompt with available data
+                    with st.spinner("Analyzing your query..."):
+                        # Create a data summary to provide context
+                        data_summary = f"""
+                        Number of employees: {len(employee_data)}
+                        Departments: {', '.join(employee_data['department'].unique())}
+                        
+                        Performance metrics available: {', '.join(metrics_data.columns)}
+                        
+                        Key performance indicators:
+                        - Average completion rate: {(performance_data['tasks_completed'].sum() / performance_data['tasks_assigned'].sum() * 100):.1f}%
+                        - Average quality score: {performance_data['quality_score'].mean():.2f}/5.0
+                        """
+                        
+                        # Create the prompt
+                        custom_prompt = f"""
+                        Analyze the following performance query about our company:
+                        
+                        Query: {query}
+                        
+                        Context:
+                        {data_summary}
+                        
+                        Provide a well-reasoned response based on the available data. Be specific and factual.
+                        Format your response with clear sections and bullet points where appropriate.
+                        """
+                        
+                        custom_response = query_groq_api(custom_prompt)
+                        st.markdown(f"<div class='ai-insights'>{custom_response}</div>", unsafe_allow_html=True)
     else:
         st.error("Selected tables not found in the database.")
